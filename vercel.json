@@ -1,0 +1,19 @@
+{
+    "version": 2,
+    "builds": [
+      {
+        "src": "src/index.ts",
+        "use": "@vercel/node"
+      }
+    ],
+    "routes": [
+      {
+        "src": "/(.*)",
+        "dest": "src/index.ts"
+      }
+    ],
+    "env": {
+      "DATABASE_URL": "@database_url"
+    },
+    "buildCommand": "npm install && npx prisma generate && npm run build"
+  }
