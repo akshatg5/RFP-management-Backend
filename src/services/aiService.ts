@@ -529,7 +529,34 @@ YOUR RESPONSE MUST BE VALID JSON:`;
       });
 
       const response = await result.response;
-      return response;
+      const text = response.text();
+
+      console.log("✅ AI Comparison complete");
+
+      // Parse the JSON from the response text
+      try {
+        // Extract JSON from markdown code blocks if present
+        const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/) || text.match(/```\n([\s\S]*?)\n```/);
+        const jsonText = jsonMatch ? jsonMatch[1] : text;
+        
+        const recommendation = JSON.parse(jsonText);
+        
+        return {
+          recommendedVendorId: recommendation.recommendedVendorId,
+          reasoning: recommendation.reasoning,
+          comparisonSummary: recommendation.comparisonSummary,
+        };
+      } catch (parseError) {
+        console.error("Failed to parse AI recommendation JSON:", parseError);
+        console.log("Raw AI response:", text);
+        
+        // Return a fallback structure
+        return {
+          recommendedVendorId: proposals[0]?.vendorId || "",
+          reasoning: "Unable to parse AI recommendation. Please review proposals manually.",
+          comparisonSummary: text,
+        };
+      }
     } catch (error: any) {
       console.error(
         "AI Service Error (compareProposals):",
