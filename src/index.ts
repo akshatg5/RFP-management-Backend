@@ -42,8 +42,7 @@ app.use(
       "Content-Type",
       "Authorization",
       "X-Requested-With",
-    ],
-    credentials: true,
+    ]
   })
 );
 
