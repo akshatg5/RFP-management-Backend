@@ -3,6 +3,7 @@ import { Request, Response } from 'express';
 import { Resend } from 'resend';
 import { RFPService } from '../services/rfpService';
 import { VendorService } from '../services/vendorService';
+import { prismaClient } from '../lib/prisma';
 
 const rfpService = new RFPService();
 const vendorService = new VendorService();
@@ -56,6 +57,7 @@ export const handleInboundEmail = async (req: Request, res: Response) => {
           fullEmail = receivedEmail.data;
           emailBody = fullEmail.text || fullEmail.html || '';
           console.log('✅ Email content retrieved from Resend receiving API');
+          console.log(`   Has text: ${!!fullEmail.text}, Has HTML: ${!!fullEmail.html}`);
         } else {
           console.warn('⚠️ Resend receiving API returned no data');
         }
@@ -107,18 +109,7 @@ export const handleInboundEmail = async (req: Request, res: Response) => {
     console.log(`Body Preview: ${emailBody.substring(0, 200)}...`);
     console.log(`Body Length: ${emailBody.length} characters`);
 
-    // Handle attachments if present
-    const attachments = fullEmail.attachments || [];
-    console.log(`Attachments: ${attachments.length}`);
-    
-    if (attachments.length > 0) {
-      console.log('Attachment details:');
-      attachments.forEach((att: any, idx: number) => {
-        console.log(`  [${idx + 1}] ${att.filename} (${att.content_type})`);
-      });
-    }
-
-    // STEP 3: Validate email data
+    // STEP 5: Validate email data
     if (!from || !emailBody) {
       console.log('⚠️  Missing required email fields');
       return res.status(200).json({
@@ -127,25 +118,7 @@ export const handleInboundEmail = async (req: Request, res: Response) => {
       });
     }
 
-    // STEP 4: Extract vendor email
-    const vendorEmail = extractEmailAddress(from);
-    console.log(`Vendor Email: ${vendorEmail}`);
-
-    // STEP 5: Find vendor in database
-    const vendor = await vendorService.getVendorByEmail(vendorEmail);
-    
-    if (!vendor) {
-      console.log(`⚠️  No vendor found with email: ${vendorEmail}`);
-      return res.status(200).json({
-        success: true,
-        message: 'Email received but no matching vendor found',
-        hint: 'Please ensure the vendor is registered in the system',
-      });
-    }
-
-    console.log(`✅ Found vendor: ${vendor.name} (ID: ${vendor.id})`);
-
-    // STEP 6: Extract RFP ID from subject or body
+    // STEP 6: Extract RFP ID from subject or body EARLY (before any processing)
     const rfpId = extractRFPId(subject, emailBody);
 
     if (!rfpId) {
@@ -162,7 +135,7 @@ export const handleInboundEmail = async (req: Request, res: Response) => {
 
     console.log(`✅ Extracted RFP ID: ${rfpId}`);
 
-    // STEP 7: Verify RFP exists
+    // STEP 7: Verify RFP exists BEFORE storing email
     const rfp = await rfpService.getRFPById(rfpId);
 
     if (!rfp) {
@@ -175,47 +148,102 @@ export const handleInboundEmail = async (req: Request, res: Response) => {
 
     console.log(`✅ Found RFP: ${rfp.title}`);
 
-    // STEP 8: Process attachments (if any) - extract text from PDFs, parse spreadsheets
-    let attachmentData = '';
+    // STEP 8: Extract vendor email
+    const vendorEmail = extractEmailAddress(from);
+    console.log(`Vendor Email: ${vendorEmail}`);
+
+    // STEP 9: Find vendor in database
+    const vendor = await vendorService.getVendorByEmail(vendorEmail);
     
-    if (attachments.length > 0) {
-      console.log('🔍 Processing attachments...');
-      attachmentData = await processAttachments(attachments);
-      
-      if (attachmentData) {
-        console.log(`✅ Extracted ${attachmentData.length} chars from attachments`);
-        // Append attachment data to email body for AI processing
-        emailBody += '\n\n--- ATTACHMENT CONTENT ---\n' + attachmentData;
-      }
+    if (!vendor) {
+      console.log(`⚠️  No vendor found with email: ${vendorEmail}`);
+      return res.status(200).json({
+        success: true,
+        message: 'Email received but no matching vendor found',
+        hint: 'Please ensure the vendor is registered in the system',
+      });
     }
 
-    // STEP 9: Process the vendor proposal using AI
+    console.log(`✅ Found vendor: ${vendor.name} (ID: ${vendor.id})`);
+
+    // STEP 10: **CRITICAL** - Store email in database FIRST before any AI processing
+    console.log('💾 Storing email in database before AI processing...');
+    
+    const storedEmail = await prismaClient.inboundEmail.create({
+      data: {
+        emailId: emailId,
+        from: from,
+        subject: subject,
+        rawBody: emailBody,
+        rfpId: rfpId,
+        vendorId: vendor.id,
+        processed: false,
+      },
+    });
+
+    console.log(`✅ Email stored with ID: ${storedEmail.id}`);
+
+    // STEP 11: Try to process the vendor proposal using AI
     console.log(`🤖 Processing proposal with AI...`);
     console.log(`   Total content length: ${emailBody.length} characters`);
     
-    const result = await rfpService.processVendorProposal(
-      rfpId,
-      vendorEmail,
-      emailBody
-    );
+    try {
+      const result = await rfpService.processVendorProposal(
+        rfpId,
+        vendorEmail,
+        emailBody
+      );
 
-    console.log(`✅ Successfully created proposal: ${result.proposalId}`);
-    console.log(`   AI Score: ${result.aiScore || 'N/A'}`);
-    console.log(`   Total Price: ${result.extractedData?.totalPrice || 'N/A'}`);
-    console.log('=============================================\n');
+      // Update stored email with success
+      await prismaClient.inboundEmail.update({
+        where: { id: storedEmail.id },
+        data: {
+          processed: true,
+          processedAt: new Date(),
+          proposalId: result.proposalId,
+        },
+      });
 
-    // Return success to Resend
-    return res.status(200).json({
-      success: true,
-      message: 'Proposal processed successfully',
-      data: {
-        proposalId: result.proposalId,
-        vendorName: vendor.name,
-        rfpTitle: rfp.title,
-        aiScore: result.aiScore,
-        extractedData: result.extractedData,
-      },
-    });
+      console.log(`✅ Successfully created proposal: ${result.proposalId}`);
+      console.log(`   AI Score: ${result.aiScore || 'N/A'}`);
+      console.log(`   Total Price: ${result.extractedData?.totalPrice || 'N/A'}`);
+      console.log('=============================================\n');
+
+      // Return success to Resend
+      return res.status(200).json({
+        success: true,
+        message: 'Proposal processed successfully',
+        data: {
+          proposalId: result.proposalId,
+          vendorName: vendor.name,
+          rfpTitle: rfp.title,
+          aiScore: result.aiScore,
+          extractedData: result.extractedData,
+        },
+      });
+
+    } catch (aiError: any) {
+      // AI processing failed - store error but email is already saved
+      console.error('❌ AI Processing Error:', aiError.message);
+      
+      await prismaClient.inboundEmail.update({
+        where: { id: storedEmail.id },
+        data: {
+          processingError: aiError.message,
+        },
+      });
+
+      console.log('💾 Email stored with error - can be re-parsed later');
+      console.log('=============================================\n');
+
+      // Still return 200 to Resend (don't retry)
+      return res.status(200).json({
+        success: false,
+        error: `Failed to process vendor proposal: ${aiError.message}`,
+        hint: 'Email has been stored and can be re-parsed later when AI quota is available',
+        storedEmailId: storedEmail.id,
+      });
+    }
 
   } catch (error: any) {
     console.error('❌ Inbound Email Error:', error.message);
@@ -265,45 +293,4 @@ function extractRFPId(subject: string, body: string): string | null {
   if (match3) return match3[1];
 
   return null;
-}
-
-/**
- * Process email attachments and extract text content
- * Supports: PDF, XLSX, CSV, TXT, DOCX
- */
-async function processAttachments(attachments: any[]): Promise<string> {
-  let extractedText = '';
-  
-  for (const attachment of attachments) {
-    const { filename, content_type, content } = attachment;
-    
-    try {
-      console.log(`Processing attachment: ${filename} (${content_type})`);
-      
-      // Handle different file types
-      if (content_type === 'text/plain' || content_type === 'text/csv') {
-        // Plain text or CSV - decode base64
-        const decoded = Buffer.from(content, 'base64').toString('utf-8');
-        extractedText += `\n\n--- ${filename} ---\n${decoded}\n`;
-      } 
-      else if (content_type === 'application/pdf') {
-        // PDF - would need pdf-parse library
-        console.log('⚠️  PDF parsing not yet implemented');
-        extractedText += `\n\n--- ${filename} (PDF - content not extracted) ---\n`;
-      }
-      else if (content_type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') {
-        // XLSX - would need xlsx library
-        console.log('⚠️  XLSX parsing not yet implemented');
-        extractedText += `\n\n--- ${filename} (Excel - content not extracted) ---\n`;
-      }
-      else {
-        console.log(`⚠️  Unsupported file type: ${content_type}`);
-      }
-      
-    } catch (error: any) {
-      console.error(`Error processing ${filename}:`, error.message);
-    }
-  }
-  
-  return extractedText;
 }

@@ -23,8 +23,9 @@ model RequestForProposal {
   paymentTerms   String?
   warrantyYears  Int?
 
-  vendors   RFPVendor[]
-  proposals Proposal[]
+  vendors       RFPVendor[]
+  proposals     Proposal[]
+  inboundEmails InboundEmail[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -37,8 +38,9 @@ model Vendor {
   email String  @unique
   notes String?
 
-  rfps      RFPVendor[]
-  proposals Proposal[]
+  rfps          RFPVendor[]
+  proposals     Proposal[]
+  inboundEmails InboundEmail[]
 
   createdAt DateTime @default(now())
 }
@@ -66,10 +68,36 @@ model Proposal {
   aiScore       Float?
   aiEvaluation  String?
 
-  rfp    RequestForProposal @relation(fields: [rfpId], references: [id])
-  vendor Vendor             @relation(fields: [vendorId], references: [id])
+  rfp          RequestForProposal @relation(fields: [rfpId], references: [id])
+  vendor       Vendor             @relation(fields: [vendorId], references: [id])
+  inboundEmail InboundEmail?
 
   createdAt DateTime @default(now())
+}
+
+// Store inbound emails before AI processing to prevent data loss
+model InboundEmail {
+  id              String  @id @default(uuid())
+  emailId         String  @unique // Resend email_id
+  from            String
+  subject         String
+  rawBody         String  @db.Text
+  rfpId           String?
+  vendorId        String?
+  processed       Boolean @default(false)
+  processingError String? @db.Text
+  proposalId      String? @unique
+
+  createdAt   DateTime  @default(now())
+  processedAt DateTime?
+
+  rfp      RequestForProposal? @relation(fields: [rfpId], references: [id])
+  vendor   Vendor?             @relation(fields: [vendorId], references: [id])
+  proposal Proposal?           @relation(fields: [proposalId], references: [id])
+
+  @@index([rfpId])
+  @@index([processed])
+  @@index([createdAt])
 }
 
 enum RFPVendorStatus {
