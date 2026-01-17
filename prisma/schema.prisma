@@ -63,10 +63,11 @@ model Proposal {
   rfpId    String
   vendorId String
 
-  rawEmailBody  String
-  extractedData Json
-  aiScore       Float?
-  aiEvaluation  String?
+  rawEmailBody        String
+  extractedData       Json
+  aiScore             Float?
+  aiEvaluation        String?
+  usedFallbackParsing Boolean @default(false) // Track if fallback parser was used
 
   rfp          RequestForProposal @relation(fields: [rfpId], references: [id])
   vendor       Vendor             @relation(fields: [vendorId], references: [id])

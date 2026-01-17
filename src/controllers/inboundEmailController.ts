@@ -218,26 +218,90 @@ export const handleInboundEmail = async (req: Request, res: Response) => {
           vendorName: vendor.name,
           rfpTitle: rfp.title,
           aiScore: result.aiScore,
-          extractedData: result.extractedData,
+      extractedData: result.extractedData,
         },
       });
 
     } catch (aiError: any) {
-      // AI processing failed - store error but email is already saved
+      // AI processing failed - use fallback parser to create basic proposal
       console.error('❌ AI Processing Error:', aiError.message);
+      console.log('🔧 Using fallback parser to create basic proposal...');
       
-      await prismaClient.inboundEmail.update({
-        where: { id: storedEmail.id },
-        data: {
-          processingError: aiError.message,
-        },
-      });
+      try {
+        // Import fallback parser
+        const { fallbackParseProposal } = await import('../utils/fallbackParser');
+        
+        // Parse with fallback
+        const fallbackData = fallbackParseProposal(emailBody);
+        
+        // Create proposal with fallback data
+        const fallbackProposal = await prismaClient.proposal.create({
+          data: {
+            rfpId: rfpId!,
+            vendorId: vendor.id,
+            rawEmailBody: emailBody,
+            extractedData: fallbackData as any,
+            aiScore: null, // No AI score available
+            aiEvaluation: null,
+            usedFallbackParsing: true, // Flag for re-parsing
+          },
+        });
 
-      console.log('💾 Email stored with error - can be re-parsed later');
-      console.log('=============================================\n');
+        // Update RFPVendor status
+        await prismaClient.rFPVendor.updateMany({
+          where: {
+            rfpId: rfpId!,
+            vendorId: vendor.id,
+          },
+          data: {
+            status: 'RESPONDED',
+          },
+        });
 
-      // Still return 200 to Resend (don't retry)
-      return res.status(200).json({
+        // Update stored email with proposal ID and mark as processed
+        await prismaClient.inboundEmail.update({
+          where: { id: storedEmail.id },
+          data: {
+            processed: true,
+            processedAt: new Date(),
+            proposalId: fallbackProposal.id,
+            processingError: `AI quota exceeded. Used fallback parsing. Original error: ${aiError.message}`,
+          },
+        });
+
+        console.log(`✅ Created proposal with fallback parser: ${fallbackProposal.id}`);
+        console.log(`⚠️  Proposal needs AI re-parsing for full analysis`);
+        console.log('=============================================\n');
+
+        // Return success with warning
+        return res.status(200).json({
+          success: true,
+          message: 'Proposal created with fallback parsing (AI quota exceeded)',
+          warning: 'Proposal created but needs AI re-parsing for full analysis',
+          data: {
+            proposalId: fallbackProposal.id,
+            vendorName: vendor.name,
+            rfpTitle: rfp.title,
+            usedFallbackParsing: true,
+            extractedData: fallbackData,
+          },
+        });
+      } catch (fallbackError: any) {
+        // Even fallback failed - store error
+        console.error('❌ Fallback parser also failed:', fallbackError.message);
+        
+        await prismaClient.inboundEmail.update({
+          where: { id: storedEmail.id },
+          data: {
+            processingError: `Both AI and fallback parsing failed. AI: ${aiError.message}, Fallback: ${fallbackError.message}`,
+          },
+        });
+
+        console.log('💾 Email stored with error - can be re-parsed later');
+        console.log('=============================================\n');
+
+        // Still return 200 to Resend (don't retry)
+        return res.status(200).json({
         success: false,
         error: `Failed to process vendor proposal: ${aiError.message}`,
         hint: 'Email has been stored and can be re-parsed later when AI quota is available',
