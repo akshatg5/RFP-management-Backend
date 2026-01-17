@@ -302,11 +302,12 @@ export const handleInboundEmail = async (req: Request, res: Response) => {
 
         // Still return 200 to Resend (don't retry)
         return res.status(200).json({
-        success: false,
-        error: `Failed to process vendor proposal: ${aiError.message}`,
-        hint: 'Email has been stored and can be re-parsed later when AI quota is available',
-        storedEmailId: storedEmail.id,
-      });
+          success: false,
+          error: `Failed to process vendor proposal: ${aiError.message}`,
+          hint: 'Email has been stored and can be re-parsed later when AI quota is available',
+          storedEmailId: storedEmail.id,
+        });
+      }
     }
 
   } catch (error: any) {
