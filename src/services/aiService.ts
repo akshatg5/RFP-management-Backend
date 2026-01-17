@@ -371,16 +371,7 @@ YOUR RESPONSE MUST BE VALID JSON:`
       });
 
       const response = await result.response;
-      let text = response.text().trim();
-
-      text = text
-        .replace(/```json\n?/g, "")
-        .replace(/```\n?/g, "")
-        .trim();
-
-      const recommendation = JSON.parse(text);
-
-      return recommendation;
+      return response;
     } catch (error: any) {
       console.error(
         "AI Service Error (compareProposals):",
